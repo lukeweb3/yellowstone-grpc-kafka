@@ -269,7 +269,8 @@ impl ArgsAction {
 
             match message {
                 Some(message) => {
-                    let payload = message.encode_to_vec();
+                    // let payload = message.encode_to_vec();
+                    let mut payload: Option<Vec<u8>> = None;
                     let message = match &message.update_oneof {
                         Some(value) => value,
                         None => unreachable!("Expect valid message"),
@@ -277,7 +278,15 @@ impl ArgsAction {
                     let slot = match message {
                         UpdateOneof::Account(msg) => msg.slot,
                         UpdateOneof::Slot(msg) => msg.slot,
-                        UpdateOneof::Transaction(msg) => msg.slot,
+                        UpdateOneof::Transaction(msg) => {
+                            payload = match &msg.transaction {
+                                Some(transaction) => Some(transaction.encode_to_vec()),
+                                None => {
+                                    None
+                                }
+                            };
+                            msg.slot
+                        },
                         UpdateOneof::TransactionStatus(msg) => msg.slot,
                         UpdateOneof::Block(msg) => msg.slot,
                         UpdateOneof::Ping(_) => continue,
@@ -285,20 +294,25 @@ impl ArgsAction {
                         UpdateOneof::BlockMeta(msg) => msg.slot,
                         UpdateOneof::Entry(msg) => msg.slot,
                     };
-                    let hash = Sha256::digest(&payload);
+                    
+                    let Some(send_data) = payload else {
+                        continue;
+                    };
+
+                    let hash = Sha256::digest(&send_data);
                     let key = format!("{slot}_{}", const_hex::encode(hash));
                     let prom_kind = GprcMessageKind::from(message);
                     print!("received data, key: {}\n", &key);
 
                     let record = FutureRecord::to(&config.kafka_topic)
                         .key(&key)
-                        .payload(&payload);
+                        .payload(&send_data);
 
                     match kafka.send_result(record) {
                         Ok(future) => {
                             let _ = send_tasks.spawn(async move {
                                 let result = future.await;
-                                debug!("kafka send message with key: {key}, result: {result:?}");
+                                println!("kafka send message with key: {key}, result: {result:?}");
 
                                 let _ = result?.map_err(|(error, _message)| error)?;
                                 metrics::sent_inc(prom_kind);
