@@ -218,6 +218,7 @@ impl ArgsAction {
         mut shutdown: BoxFuture<'static, ()>,
     ) -> anyhow::Result<()> {
         for (key, value) in config.kafka.into_iter() {
+            print!("kafka_config:  key {}, value {}", &key, &value);
             kafka_config.set(key, value);
         }
 
@@ -235,6 +236,8 @@ impl ArgsAction {
             .tls_config(ClientTlsConfig::new().with_native_roots())?
             .connect()
             .await?;
+        // print!("subscribe: {}", &config.request.slots);
+        println!("subscribe, {:?}", &config.request); 
         let mut geyser = client.subscribe_once(config.request.to_proto()).await?;
 
         // Receive-send loop
@@ -285,6 +288,7 @@ impl ArgsAction {
                     let hash = Sha256::digest(&payload);
                     let key = format!("{slot}_{}", const_hex::encode(hash));
                     let prom_kind = GprcMessageKind::from(message);
+                    print!("received data, key: {}\n", &key);
 
                     let record = FutureRecord::to(&config.kafka_topic)
                         .key(&key)
@@ -393,7 +397,12 @@ async fn main() -> anyhow::Result<()> {
     setup_tracing()?;
 
     // Parse args
-    let args = Args::parse();
+    // let args = Args::parse();
+    let args = Args {
+        config: "/home/luke/go/src/github.com/lukeweb3/yellowstone-grpc-kafka/config-kafka.json".to_string(),  // 必须提供 String 类型值
+        prometheus: Some("127.0.0.1:9090".parse().unwrap()),  // Option<SocketAddr> 类型
+        action: ArgsAction::Grpc2Kafka,   // 子命令枚举实例化
+    };
     let config = config_load::<Config>(&args.config).await?;
 
     // Run prometheus server

@@ -1,7 +1,7 @@
 {
     "prometheus": "127.0.0.1:8873",
     "kafka": {
-        "bootstrap.servers": "localhost:29092",
+        "bootstrap.servers": "localhost:9092",
         "statistics.interval.ms": "1000"
     },
     "dedup": {
@@ -17,34 +17,21 @@
         }
     },
     "grpc2kafka": {
-        "endpoint": "http://127.0.0.1:10000",
+        "endpoint": "http://127.0.0.1:10001",
         "x_token": null,
         "request": {
-            "slots": {
+            "transactions": {
                 "client": {
-                    "filter_by_commitment": null
-                }
-            },
-            "blocks": {
-                "client": {
-                    "account_include": [],
-                    "include_transactions": false,
-                    "include_accounts": false,
-                    "include_entries": false
+                    "vote": false,
+                    "failed": false,
+                    "account_include": ["45iBNkaENereLKMjLm2LHkF3hpDapf6mnvrM5HWFg9cY"],
+                    "account_exclude": [],
+                    "account_required": []
                 }
             }
         },
         "kafka": {},
-        "kafka_topic": "grpc1",
+        "kafka_topic": "test-topic",
         "kafka_queue_size": "10_000"
-    },
-    "kafka2grpc": {
-        "kafka": {
-            "group.id": "kafka2grpc",
-            "group.instance.id": "kafka2grpc"
-        },
-        "kafka_topic": "grpc2",
-        "listen": "127.0.0.1:10001",
-        "channel_capacity": 250000
     }
 }
