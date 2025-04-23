@@ -1,3 +1,6 @@
+#[path = "../generated/mod.rs"]
+mod generated;
+
 use {
     anyhow::Context,
     clap::{Parser, Subcommand},
@@ -25,6 +28,7 @@ use {
         prelude::{subscribe_update::UpdateOneof, SubscribeUpdate},
         prost::Message as _,
     },
+    serde_json,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -279,12 +283,20 @@ impl ArgsAction {
                         UpdateOneof::Account(msg) => msg.slot,
                         UpdateOneof::Slot(msg) => msg.slot,
                         UpdateOneof::Transaction(msg) => {
-                            payload = match &msg.transaction {
-                                Some(transaction) => Some(transaction.encode_to_vec()),
-                                None => {
-                                    None
+                            payload = msg.transaction.as_ref().and_then(|transaction| {
+                                let tx_data = transaction.encode_to_vec();
+                                match crate::generated::prelude::SubscribeUpdateTransactionInfo::decode(tx_data.as_slice()) {
+                                    Ok(tx) => {
+                                        let tx_json = serde_json::to_string(&tx).unwrap();
+                                        print!("tx_json: {}", &tx_json);
+                                        Some(tx_json.into_bytes())
+                                    }
+                                    Err(error) => {
+                                        warn!("failed to decode message: {}", error);
+                                        None
+                                    }
                                 }
-                            };
+                            });
                             msg.slot
                         },
                         UpdateOneof::TransactionStatus(msg) => msg.slot,

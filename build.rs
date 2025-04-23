@@ -1,4 +1,6 @@
-use {cargo_lock::Lockfile, std::collections::HashSet};
+use {
+    cargo_lock::Lockfile, std::collections::HashSet,
+};
 
 fn main() -> anyhow::Result<()> {
     vergen::Emitter::default()
@@ -23,6 +25,25 @@ fn main() -> anyhow::Result<()> {
         get_pkg_version(&lockfile, "yellowstone-grpc-proto")
     );
 
+    std::env::set_var("PROTOC", protobuf_src::protoc());
+
+    // build protos
+    tonic_build::configure()
+        .type_attribute("geyser.SubscribeUpdateTransactionInfo", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.Transaction", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.TransactionStatusMeta", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.ReturnData", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.Reward", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.TokenBalance", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.InnerInstructions", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.TransactionError", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.UiTokenAmount", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.InnerInstruction", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.Message", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.MessageAddressTableLookup", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.CompiledInstruction", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("solana.storage.ConfirmedBlock.MessageHeader", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .compile_protos(&["proto/geyser.proto"], &["proto"])?;
     Ok(())
 }
 

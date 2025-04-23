@@ -5,6 +5,7 @@ pub mod kafka;
 pub mod metrics;
 
 pub mod version;
+pub mod generated;
 
 use {
     futures::future::{BoxFuture, FutureExt},

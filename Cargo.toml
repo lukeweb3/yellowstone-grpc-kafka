@@ -26,6 +26,9 @@ hyper-util = { version = "0.1.7", optional = true }
 json5 = "0.4.1"
 lazy_static = { version = "1.4.0", optional = true }
 prometheus = { version = "0.13.2", optional = true }
+prost = "0.13.1"
+prost-types = "0.13.3"
+prost_011 = { package = "prost", version = "0.11.9" }
 serde = "1.0.145"
 serde_json = "1.0.86"
 serde_yaml = "0.9.25"
@@ -49,6 +52,9 @@ rdkafka = { version = "0.36.2", features = ["sasl", "ssl-vendored"], optional = 
 anyhow = "1.0.62"
 cargo-lock = "10.1.0"
 git-version = "0.3.5"
+protobuf-src = "1.1.0"
+tonic = "0.12.1"
+tonic-build = "0.12.1"
 vergen = { version = "9.0.0", features = ["build", "rustc"] }
 
 [features]
