@@ -29,7 +29,10 @@ use {
         prost::Message as _,
     },
     serde_json,
+    actix_web::{App, HttpServer, Responder},
+    actix_web_codegen::routes,
 };
+use base64::{engine::general_purpose, Engine as _};
 
 #[derive(Debug, Clone, Parser)]
 #[clap(author, version, about = "Yellowstone gRPC Kafka Tool")]
@@ -285,10 +288,12 @@ impl ArgsAction {
                         UpdateOneof::Transaction(msg) => {
                             payload = msg.transaction.as_ref().and_then(|transaction| {
                                 let tx_data = transaction.encode_to_vec();
+                                let b64: String = general_purpose::STANDARD.encode(&tx_data);
+                                print!("tx_data: {}", b64);
                                 match crate::generated::prelude::SubscribeUpdateTransactionInfo::decode(tx_data.as_slice()) {
                                     Ok(tx) => {
                                         let tx_json = serde_json::to_string(&tx).unwrap();
-                                        print!("tx_json: {}", &tx_json);
+                                        // print!("tx_json: {}", &tx_json);
                                         Some(tx_json.into_bytes())
                                     }
                                     Err(error) => {
@@ -314,7 +319,7 @@ impl ArgsAction {
                     let hash = Sha256::digest(&send_data);
                     let key = format!("{slot}_{}", const_hex::encode(hash));
                     let prom_kind = GprcMessageKind::from(message);
-                    print!("received data, key: {}\n", &key);
+                    // print!("received data, key: {}\n", &key);
 
                     let record = FutureRecord::to(&config.kafka_topic)
                         .key(&key)
@@ -418,6 +423,13 @@ impl ArgsAction {
     }
 }
 
+#[routes]
+#[get("/health")]
+#[get("/internal/health")]
+async fn health() -> impl Responder {
+    "OK"
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     setup_tracing()?;
@@ -442,5 +454,19 @@ async fn main() -> anyhow::Result<()> {
         kafka_config.set(key, value);
     }
 
-    args.action.run(config, kafka_config).await
+    // args.action.run(config, kafka_config).await
+
+    // Actix-web Server Future
+    let actix_srv = HttpServer::new(|| {
+        App::new()
+            // register the macro-routed handler directly
+            .service(health)
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run();
+
+    let biz = args.action.run(config, kafka_config);
+    let (srv_res, biz_res) = tokio::join!(actix_srv, biz);
+    srv_res?; biz_res?;
+    Ok(())
 }
