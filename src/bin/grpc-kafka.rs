@@ -38,7 +38,7 @@ use base64::{engine::general_purpose, Engine as _};
 #[clap(author, version, about = "Yellowstone gRPC Kafka Tool")]
 struct Args {
     /// Path to config file
-    #[clap(short, long)]
+    #[clap(short, long, default_value = "./config-kafka.json")]
     config: String,
 
     /// Prometheus listen address
