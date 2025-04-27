@@ -46,14 +46,15 @@ struct Args {
     prometheus: Option<SocketAddr>,
 
     #[command(subcommand)]
-    action: ArgsAction,
+    action: Option<ArgsAction>,
 }
 
-#[derive(Debug, Clone, Subcommand)]
+#[derive(Debug, Clone, Subcommand, Default)]
 enum ArgsAction {
     /// Receive data from Kafka, deduplicate and send them back to Kafka
     Dedup,
     /// Receive data from gRPC and send them to the Kafka
+    #[default]
     #[command(name = "grpc2kafka")]
     Grpc2Kafka,
     /// Receive data from Kafka and send them over gRPC
@@ -64,20 +65,24 @@ enum ArgsAction {
 impl ArgsAction {
     async fn run(self, config: Config, kafka_config: ClientConfig) -> anyhow::Result<()> {
         let shutdown = create_shutdown()?;
+        print!("running {:?}", self);
         match self {
             ArgsAction::Dedup => {
+                print!("running Dedup");
                 let config = config.dedup.ok_or_else(|| {
                     anyhow::anyhow!("`dedup` section in config should be defined")
                 })?;
                 Self::dedup(kafka_config, config, shutdown).await
             }
             ArgsAction::Grpc2Kafka => {
+                print!("running Grpc2Kafka");
                 let config = config.grpc2kafka.ok_or_else(|| {
                     anyhow::anyhow!("`grpc2kafka` section in config should be defined")
                 })?;
                 Self::grpc2kafka(kafka_config, config, shutdown).await
             }
             ArgsAction::Kafka2Grpc => {
+                print!("running Kafka2Grpc");
                 let config = config.kafka2grpc.ok_or_else(|| {
                     anyhow::anyhow!("`kafka2grpc` section in config should be defined")
                 })?;
@@ -435,12 +440,12 @@ async fn main() -> anyhow::Result<()> {
     setup_tracing()?;
 
     // Parse args
-    // let args = Args::parse();
-    let args = Args {
-        config: "/home/luke/go/src/github.com/lukeweb3/yellowstone-grpc-kafka/config-kafka.json".to_string(),  // 必须提供 String 类型值
-        prometheus: Some("127.0.0.1:9090".parse().unwrap()),  // Option<SocketAddr> 类型
-        action: ArgsAction::Grpc2Kafka,   // 子命令枚举实例化
-    };
+    let args = Args::parse();
+    // let args = Args {
+    //     config: "/home/luke/go/src/github.com/lukeweb3/yellowstone-grpc-kafka/config-kafka.json".to_string(),  // 必须提供 String 类型值
+    //     prometheus: Some("127.0.0.1:9090".parse().unwrap()),  // Option<SocketAddr> 类型
+    //     action: ArgsAction::Grpc2Kafka,   // 子命令枚举实例化
+    // };
     let config = config_load::<Config>(&args.config).await?;
 
     // Run prometheus server
@@ -465,7 +470,8 @@ async fn main() -> anyhow::Result<()> {
     .bind(("127.0.0.1", 8080))?
     .run();
 
-    let biz = args.action.run(config, kafka_config);
+    let action = args.action.unwrap_or_default();
+    let biz = action.run(config, kafka_config);
     let (srv_res, biz_res) = tokio::join!(actix_srv, biz);
     srv_res?; biz_res?;
     Ok(())
