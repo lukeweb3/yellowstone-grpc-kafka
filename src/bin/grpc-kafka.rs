@@ -31,6 +31,7 @@ use {
     serde_json,
     actix_web::{App, HttpServer, Responder},
     actix_web_codegen::routes,
+    std::thread,
 };
 use base64::{engine::general_purpose, Engine as _};
 
@@ -65,24 +66,24 @@ enum ArgsAction {
 impl ArgsAction {
     async fn run(self, config: Config, kafka_config: ClientConfig) -> anyhow::Result<()> {
         let shutdown = create_shutdown()?;
-        print!("running {:?}", self);
+        println!("running {:?}", self);
         match self {
             ArgsAction::Dedup => {
-                print!("running Dedup");
+                println!("running Dedup");
                 let config = config.dedup.ok_or_else(|| {
                     anyhow::anyhow!("`dedup` section in config should be defined")
                 })?;
                 Self::dedup(kafka_config, config, shutdown).await
             }
             ArgsAction::Grpc2Kafka => {
-                print!("running Grpc2Kafka");
+                println!("running Grpc2Kafka");
                 let config = config.grpc2kafka.ok_or_else(|| {
                     anyhow::anyhow!("`grpc2kafka` section in config should be defined")
                 })?;
                 Self::grpc2kafka(kafka_config, config, shutdown).await
             }
             ArgsAction::Kafka2Grpc => {
-                print!("running Kafka2Grpc");
+                println!("running Kafka2Grpc");
                 let config = config.kafka2grpc.ok_or_else(|| {
                     anyhow::anyhow!("`kafka2grpc` section in config should be defined")
                 })?;
@@ -240,140 +241,188 @@ impl ArgsAction {
         let mut kafka_error = false;
         tokio::pin!(kafka_error_rx);
 
-        // Create gRPC client & subscribe
-        let mut client = GeyserGrpcClient::build_from_shared(config.endpoint)?
-            .x_token(config.x_token)?
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(5))
-            .tls_config(ClientTlsConfig::new().with_native_roots())?
-            .connect()
-            .await?;
-        // print!("subscribe: {}", &config.request.slots);
-        println!("subscribe, {:?}", &config.request); 
-        let mut geyser = client.subscribe_once(config.request.to_proto()).await?;
+        let endpoints: Vec<String> = config
+        .endpoint
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+        let mut ep_idx = 0;
+        let ep_count = endpoints.len();
 
-        // Receive-send loop
-        let mut send_tasks = JoinSet::new();
         loop {
-            let message = tokio::select! {
-                _ = &mut shutdown => break,
-                _ = &mut kafka_error_rx => {
-                    kafka_error = true;
-                    break;
+            let ep = &endpoints[ep_idx];
+            println!("trying connect to endpoint[{}]: {}", ep_idx, ep);
+
+            let builder = GeyserGrpcClient::build_from_shared(ep.clone())?    // :contentReference[oaicite:0]{index=0}
+            .x_token(config.x_token.clone())?                               // :contentReference[oaicite:1]{index=1}
+            .connect_timeout(Duration::from_secs(10))                     // :contentReference[oaicite:2]{index=2}
+            .timeout(Duration::from_secs(5))                              // :contentReference[oaicite:3]{index=3}
+            .tls_config(ClientTlsConfig::new().with_native_roots())?;     // :contentReference[oaicite:4]{index=4}
+
+            // 关键：用 builder.connect() 而非私有的 build()
+            let mut client = match builder.connect().await {                 // :contentReference[oaicite:5]{index=5}
+                Ok(c) => {
+                    println!("connected success, gRPC client is ready");
+                    c
                 }
-                maybe_result = send_tasks.join_next() => match maybe_result {
-                    Some(result) => {
-                        result??;
-                        continue;
+                Err(err) => {
+                    println!("connected failed: {:?}, swtich to next endpoint", err);
+                    ep_idx = (ep_idx + 1) % ep_count;
+                    thread::sleep(Duration::from_millis(2000)); 
+                    continue;
+                }
+            };
+
+            let req = config.request.clone(); 
+
+            println!("subscribe, {:?}", req); 
+            // let mut geyser = client.subscribe_once(config.request.to_proto()).await?;
+            let mut geyser = match client.subscribe_once(req.to_proto()).await {
+                Ok(s) => s,
+                Err(err) => {
+                    println!("subscribe failed: {:?}, switch to next endpoint", err);
+                    ep_idx = (ep_idx + 1) % ep_count;
+                    thread::sleep(Duration::from_millis(2000)); 
+                    continue;
+                }
+            };
+
+            // Receive-send loop
+            let mut send_tasks = JoinSet::new();
+            'stream_loop: loop {
+                let msg_result = tokio::select! {
+                    _ = &mut shutdown => break,
+                    _ = &mut kafka_error_rx => {
+                        kafka_error = true;
+                        break;
                     }
-                    None => tokio::select! {
-                        _ = &mut shutdown => break,
-                        _ = &mut kafka_error_rx => {
-                            kafka_error = true;
-                            break;
+                    maybe_result = send_tasks.join_next() => match maybe_result {
+                        Some(result) => {
+                            result??;
+                            continue;
                         }
-                        message = geyser.next() => message,
-                    }
-                },
-                message = geyser.next() => message,
-            }
-            .transpose()?;
+                        None => tokio::select! {
+                            _ = &mut shutdown => break,
+                            _ = &mut kafka_error_rx => {
+                                kafka_error = true;
+                                break;
+                            }
+                            message = geyser.next() => message,
+                        }
+                    },
+                    message = geyser.next() => message,
+                }
+                .transpose();
 
-            match message {
-                Some(message) => {
-                    // let payload = message.encode_to_vec();
-                    let mut payload: Option<Vec<u8>> = None;
-                    let message = match &message.update_oneof {
-                        Some(value) => value,
-                        None => unreachable!("Expect valid message"),
-                    };
-                    let slot = match message {
-                        UpdateOneof::Account(msg) => msg.slot,
-                        UpdateOneof::Slot(msg) => msg.slot,
-                        UpdateOneof::Transaction(msg) => {
-                            payload = msg.transaction.as_ref().and_then(|transaction| {
-                                let tx_data = transaction.encode_to_vec();
-                                let b64: String = general_purpose::STANDARD.encode(&tx_data);
-                                print!("tx_data: {}", b64);
-                                match crate::generated::prelude::SubscribeUpdateTransactionInfo::decode(tx_data.as_slice()) {
-                                    Ok(tx) => {
-                                        let tx_json = serde_json::to_string(&tx).unwrap();
-                                        // print!("tx_json: {}", &tx_json);
-                                        Some(tx_json.into_bytes())
+                let message;
+                match msg_result {
+                    Ok(Some(msg)) => {
+                        message = msg;
+                        // let payload = message.encode_to_vec();
+                        let mut payload: Option<Vec<u8>> = None;
+                        let message = match &message.update_oneof {
+                            Some(value) => value,
+                            None => unreachable!("Expect valid message"),
+                        };
+                        let slot = match message {
+                            UpdateOneof::Account(msg) => msg.slot,
+                            UpdateOneof::Slot(msg) => msg.slot,
+                            UpdateOneof::Transaction(msg) => {
+                                payload = msg.transaction.as_ref().and_then(|transaction| {
+                                    let tx_data = transaction.encode_to_vec();
+                                    let b64: String = general_purpose::STANDARD.encode(&tx_data);
+                                    print!("tx_data: {}", b64);
+                                    match crate::generated::prelude::SubscribeUpdateTransactionInfo::decode(tx_data.as_slice()) {
+                                        Ok(tx) => {
+                                            let tx_json = serde_json::to_string(&tx).unwrap();
+                                            // print!("tx_json: {}", &tx_json);
+                                            Some(tx_json.into_bytes())
+                                        }
+                                        Err(error) => {
+                                            warn!("failed to decode message: {}", error);
+                                            None
+                                        }
                                     }
-                                    Err(error) => {
-                                        warn!("failed to decode message: {}", error);
-                                        None
-                                    }
-                                }
-                            });
-                            msg.slot
-                        },
-                        UpdateOneof::TransactionStatus(msg) => msg.slot,
-                        UpdateOneof::Block(msg) => msg.slot,
-                        UpdateOneof::Ping(_) => continue,
-                        UpdateOneof::Pong(_) => continue,
-                        UpdateOneof::BlockMeta(msg) => msg.slot,
-                        UpdateOneof::Entry(msg) => msg.slot,
-                    };
-                    
-                    let Some(send_data) = payload else {
-                        continue;
-                    };
+                                });
+                                msg.slot
+                            },
+                            UpdateOneof::TransactionStatus(msg) => msg.slot,
+                            UpdateOneof::Block(msg) => msg.slot,
+                            UpdateOneof::Ping(_) => continue,
+                            UpdateOneof::Pong(_) => continue,
+                            UpdateOneof::BlockMeta(msg) => msg.slot,
+                            UpdateOneof::Entry(msg) => msg.slot,
+                        };
+                        
+                        let Some(send_data) = payload else {
+                            continue;
+                        };
 
-                    let hash = Sha256::digest(&send_data);
-                    let key = format!("{slot}_{}", const_hex::encode(hash));
-                    let prom_kind = GprcMessageKind::from(message);
-                    // print!("received data, key: {}\n", &key);
+                        let hash = Sha256::digest(&send_data);
+                        let key = format!("{slot}_{}", const_hex::encode(hash));
+                        let prom_kind = GprcMessageKind::from(message);
+                        // print!("received data, key: {}\n", &key);
 
-                    let record = FutureRecord::to(&config.kafka_topic)
-                        .key(&key)
-                        .payload(&send_data);
+                        let record = FutureRecord::to(&config.kafka_topic)
+                            .key(&key)
+                            .payload(&send_data);
 
-                    match kafka.send_result(record) {
-                        Ok(future) => {
-                            let _ = send_tasks.spawn(async move {
-                                let result = future.await;
-                                println!("kafka send message with key: {key}, result: {result:?}");
+                        match kafka.send_result(record) {
+                            Ok(future) => {
+                                let _ = send_tasks.spawn(async move {
+                                    let result = future.await;
+                                    println!("kafka send message with key: {key}, result: {result:?}");
 
-                                let _ = result?.map_err(|(error, _message)| error)?;
-                                metrics::sent_inc(prom_kind);
-                                Ok::<(), anyhow::Error>(())
-                            });
-                            if send_tasks.len() >= config.kafka_queue_size {
-                                tokio::select! {
-                                    _ = &mut shutdown => break,
-                                    _ = &mut kafka_error_rx => {
-                                        kafka_error = true;
-                                        break;
-                                    }
-                                    result = send_tasks.join_next() => {
-                                        if let Some(result) = result {
-                                            result??;
+                                    let _ = result?.map_err(|(error, _message)| error)?;
+                                    metrics::sent_inc(prom_kind);
+                                    Ok::<(), anyhow::Error>(())
+                                });
+                                if send_tasks.len() >= config.kafka_queue_size {
+                                    tokio::select! {
+                                        _ = &mut shutdown => break,
+                                        _ = &mut kafka_error_rx => {
+                                            kafka_error = true;
+                                            break;
+                                        }
+                                        result = send_tasks.join_next() => {
+                                            if let Some(result) = result {
+                                                result??;
+                                            }
                                         }
                                     }
                                 }
                             }
+                            Err(error) => return Err(error.0.into()),
                         }
-                        Err(error) => return Err(error.0.into()),
+                    }
+                    Ok(None) => {
+                        // closed by the remote peer
+                        println!("gRPC is closed (Ok(None)), switch to next endpoint");  // 
+                        break 'stream_loop;
+                    }
+                    Err(status) => {
+                        // RPC/connection error
+                        println!("rpc error(code={:?}): {}, switch to next endpoint", 
+                                 status.code(), status.message());                  // 
+                        break 'stream_loop;
                     }
                 }
-                None => break,
+                ep_idx = (ep_idx + 1) % ep_count;
+                thread::sleep(Duration::from_millis(2000));
             }
-        }
-        if !kafka_error {
-            warn!("shutdown received...");
-            loop {
-                tokio::select! {
-                    _ = &mut kafka_error_rx => break,
-                    result = send_tasks.join_next() => match result {
-                        Some(result) => result??,
-                        None => break
+            if !kafka_error {
+                warn!("shutdown received...");
+                loop {
+                    tokio::select! {
+                        _ = &mut kafka_error_rx => break,
+                        result = send_tasks.join_next() => match result {
+                            Some(result) => result??,
+                            None => break
+                        }
                     }
                 }
             }
         }
-        Ok(())
     }
 
     async fn kafka2grpc(
